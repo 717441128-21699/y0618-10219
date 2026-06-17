@@ -162,3 +162,49 @@ export function visibleEnergy(particles: Particle[]): number {
 export function scalarSumET(particles: Particle[]): number {
   return particles.reduce((s, p) => s + p.pt, 0);
 }
+
+export function generateJetConePoints(
+  vertex: Vector3,
+  pt: number,
+  phi: number,
+  eta: number,
+  radius: number = 0.4,
+  numPoints: number = 24,
+): Vector3[] {
+  const points: Vector3[] = [];
+  const theta = thetaFromEta(eta);
+  const axis = {
+    x: Math.sin(theta) * Math.cos(phi),
+    y: Math.sin(theta) * Math.sin(phi),
+    z: Math.cos(theta),
+  };
+  const maxLength = 2800;
+  const steps = 16;
+  for (let s = 0; s < steps; s++) {
+    const t = ((s + 1) / steps) * maxLength;
+    const center = {
+      x: vertex.x + axis.x * t,
+      y: vertex.y + axis.y * t,
+      z: vertex.z + axis.z * t,
+    };
+    const rCone = t * Math.tan(radius * 0.35) + 8 + pt * 0.02;
+    for (let a = 0; a < numPoints / steps; a++) {
+      const ang = (a / (numPoints / steps)) * Math.PI * 2;
+      const perp1 = { x: -axis.y, y: axis.x, z: 0 };
+      const p1n = Math.sqrt(perp1.x * perp1.x + perp1.y * perp1.y);
+      if (p1n > 1e-9) { perp1.x /= p1n; perp1.y /= p1n; }
+      const perp2 = {
+        x: axis.y * perp1.z - axis.z * perp1.y,
+        y: axis.z * perp1.x - axis.x * perp1.z,
+        z: axis.x * perp1.y - axis.y * perp1.x,
+      };
+      points.push({
+        x: center.x + (perp1.x * Math.cos(ang) + perp2.x * Math.sin(ang)) * rCone,
+        y: center.y + (perp1.y * Math.cos(ang) + perp2.y * Math.sin(ang)) * rCone,
+        z: center.z + (perp1.z * Math.cos(ang) + perp2.z * Math.sin(ang)) * rCone,
+      });
+    }
+  }
+  if (points.length === 0) points.push({ ...vertex });
+  return points;
+}

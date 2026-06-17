@@ -173,3 +173,30 @@ export function renderThreeCanvasToImage(
   ctx.drawImage(canvas, 0, 0, out.width, out.height);
   return out.toDataURL(`image/${format}`, 0.95);
 }
+
+export async function renderCompositionToImage(
+  element: HTMLElement,
+  options: ExportCanvasOptions,
+): Promise<string> {
+  const { width, height, dpi, format, backgroundColor } = options;
+  const scale = dpi / 96;
+  if ((window as any).__htmlToImageLoaded === false && !toPng) {
+    const out = document.createElement('canvas');
+    out.width = width; out.height = height;
+    const ctx = out.getContext('2d');
+    if (ctx && backgroundColor) {
+      ctx.fillStyle = backgroundColor;
+      ctx.fillRect(0, 0, width, height);
+    }
+    return out.toDataURL(`image/${format}`, 0.95);
+  }
+  const converter = format === 'jpeg' ? toJpeg : toPng;
+  return await converter(element, {
+    width: width,
+    height: height,
+    pixelRatio: scale,
+    backgroundColor: backgroundColor || '#0B1020',
+    cacheBust: true,
+    quality: 0.95,
+  } as any);
+}

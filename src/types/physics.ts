@@ -100,3 +100,75 @@ export interface HistogramBin {
   xMin: number;
   xMax: number;
 }
+
+export type ParticleField =
+  | 'px' | 'py' | 'pz' | 'energy'
+  | 'eta' | 'phi' | 'pt'
+  | 'charge' | 'pdgId' | 'mass'
+  | 'vx' | 'vy' | 'vz';
+
+export const REQUIRED_PARTICLE_FIELDS: ParticleField[] = ['px', 'py', 'pz', 'energy'];
+export const RECOMMENDED_PARTICLE_FIELDS: ParticleField[] = ['eta', 'phi', 'pt', 'charge', 'pdgId', 'mass'];
+
+export interface BranchMapping {
+  particleField: ParticleField;
+  branchName: string | null;
+  required: boolean;
+  validated: boolean;
+  error?: string;
+  sampleValues?: (number | string)[];
+  dtype?: string;
+}
+
+export interface EventBranchInfo {
+  name: string;
+  type: 'scalar' | 'vector' | 'jagged';
+  dtype: string;
+  sampleValues?: any[];
+  nullCount?: number;
+  description?: string;
+}
+
+export interface ParseValidationReport {
+  ok: boolean;
+  errors: { severity: 'error' | 'warning' | 'info'; message: string; field?: ParticleField }[];
+  eventCount: number;
+  particleCountPerEvent: number[];
+  fileBranches: EventBranchInfo[];
+  previewParticles: Particle[];
+}
+
+export type DecayChannelKey =
+  | 'ee'       // 电子对 (e+ e-)
+  | 'mumu'     // 缪子对 (μ+ μ-)
+  | 'gammagamma' // 光子对 (γγ)
+  | 'tautau'   // τ 对
+  | 'bb'       // 底夸克对
+  | 'll'       // 任意轻子对
+  | 'jj'       // 喷注对
+  | 'custom';  // 自定义混合对
+
+export interface ChannelLabel {
+  key: DecayChannelKey;
+  name: string;
+  shortName: string;
+  color: string;
+  particleTypes: [ParticleType, ParticleType] | null; // null 表示混合
+}
+
+export interface MassHistogramChannel {
+  key: DecayChannelKey;
+  label: ChannelLabel;
+  pairs: InvariantMassPair[];
+  histogram: HistogramData | null;
+  peakEvents: Array<{ eventId: number; pairId: string; mass: number; deltaR?: number }>;
+}
+
+export interface PeakCandidate {
+  eventId: number;
+  pairId: string;
+  mass: number;
+  deltaR: number;
+  histogramKey: DecayChannelKey;
+  binIndex: number;
+}
