@@ -81,6 +81,7 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
   const [previewData, setPreviewData] = useState<Partial<Record<ParticleField, any[]>>>({});
   const [nParticlesPerEvent, setNParticlesPerEvent] = useState<number[]>([]);
   const [probedFile, setProbedFile] = useState<File | null>(null);
+  const [rawBranchData, setRawBranchData] = useState<Record<string, any[]>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -111,6 +112,7 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
       setMappings(r.mappings);
       setPreviewData(r.preview);
       setNParticlesPerEvent(r.nParticlesPerEvent);
+      setRawBranchData(r.rawData.data);
       setStep('mapping');
       setStatusMsg(null);
     } catch (e) {
@@ -142,11 +144,35 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
   };
 
   const handleUpdateMapping = (field: ParticleField, branchName: string | null) => {
-    setMappings(prev => prev.map(m =>
-      m.particleField === field
-        ? { ...m, branchName, validated: !!branchName }
-        : m
-    ));
+    setMappings(prev => {
+      const next = prev.map(m =>
+        m.particleField === field
+          ? { ...m, branchName, validated: !!branchName }
+          : m
+      );
+      const newPreview: Partial<Record<ParticleField, any[]>> = { ...previewData };
+      const nRead = nParticlesPerEvent.length;
+      if (branchName) {
+        const col = rawBranchData[branchName];
+        if (col && Array.isArray(col)) {
+          const arr: any[] = [];
+          for (let ev = 0; ev < nRead; ev++) {
+            const v = col[ev];
+            if (Array.isArray(v)) arr.push([...v]);
+            else arr.push(v);
+          }
+          newPreview[field] = arr;
+        } else {
+          delete newPreview[field];
+        }
+      } else {
+        delete newPreview[field];
+      }
+      setPreviewData(newPreview);
+      const r = validateBranchMappings(next, branches, newPreview, nParticlesPerEvent);
+      setReport(r);
+      return next;
+    });
   };
 
   const handleAutoMap = () => {
@@ -179,7 +205,7 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
     setStep('loading');
     setProgress(0);
     try {
-      await loadFromRealFile(fileToLoad, mappings, 200, (d, t) => setProgress(Math.round(d * 100 / t)));
+      await loadFromRealFile(fileToLoad, mappings, Number.MAX_SAFE_INTEGER, (d, t) => setProgress(Math.round(d * 100 / t)));
       setStep('done');
       setTimeout(() => { onClose(); }, 1500);
     } catch (e) {

@@ -104,7 +104,7 @@ export const useEventStore = create<EventState>((set, get) => ({
     await get().loadFromRealFile(file, []);
   },
 
-  loadFromRealFile: async (file, mappings, maxEvents = 200, progress) => {
+  loadFromRealFile: async (file, mappings, maxEvents = Number.MAX_SAFE_INTEGER, progress) => {
     set({ isLoading: true, error: null, loadingProgress: 0 });
     try {
       const ext = file.name.split('.').pop()?.toLowerCase();

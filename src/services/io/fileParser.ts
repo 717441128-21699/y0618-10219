@@ -132,19 +132,20 @@ interface ParsedFileData {
   nParticlesPerEvent: number[];
 }
 
-function safeNum(v: any): number | null {
+function safeNum(v: any, strict: boolean = true): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v === 'number') {
     return Number.isFinite(v) ? v : null;
   }
   if (typeof v === 'string') {
+    if (strict) return null;
     const n = parseFloat(v);
     return Number.isFinite(n) ? n : null;
   }
   if (typeof v === 'boolean') return v ? 1 : 0;
-  if (Array.isArray(v) && v.length > 0) return safeNum(v[0]);
-  if (typeof v === 'object' && v !== null && 'arr' in v && Array.isArray(v.arr)) return safeNum(v.arr[0]);
-  if (typeof v === 'object' && v !== null && 'fArray' in v && Array.isArray(v.fArray)) return safeNum(v.fArray[0]);
+  if (Array.isArray(v) && v.length > 0) return safeNum(v[0], strict);
+  if (typeof v === 'object' && v !== null && 'arr' in v && Array.isArray(v.arr)) return safeNum(v.arr[0], strict);
+  if (typeof v === 'object' && v !== null && 'fArray' in v && Array.isArray(v.fArray)) return safeNum(v.fArray[0], strict);
   return null;
 }
 
@@ -240,11 +241,23 @@ async function parseROOTFile(file: File, readData: boolean = true, maxPreview: n
         if (arrVal !== null) {
           if (arrVal.length > nPartThisEvent) nPartThisEvent = arrVal.length;
           data[name] = data[name] || [];
-          data[name][ev] = [...arrVal];
+          data[name][ev] = arrVal.map(v => {
+            if (typeof v === 'string') return v;
+            if (typeof v === 'number') return v;
+            return safeNum(v);
+          });
         } else {
-          const s = safeNum(val);
-          data[name] = data[name] || [];
-          data[name][ev] = s;
+          if (typeof val === 'string') {
+            data[name] = data[name] || [];
+            data[name][ev] = val;
+          } else if (typeof val === 'number') {
+            data[name] = data[name] || [];
+            data[name][ev] = val;
+          } else {
+            const s = safeNum(val);
+            data[name] = data[name] || [];
+            data[name][ev] = s;
+          }
         }
       }
       nParticlesPerEvent[ev] = nPartThisEvent;
@@ -334,7 +347,13 @@ async function parseHDF5File(file: File, readData: boolean = true, maxPreview: n
   for (const ds of datasets) {
     if (!ds.values) continue;
     data[ds.name] = ds.values.map((v: any) => {
-      if (Array.isArray(v)) return v.map(safeNum);
+      if (Array.isArray(v)) return v.map((x: any) => {
+        if (typeof x === 'string') return x;
+        if (typeof x === 'number') return x;
+        return safeNum(x);
+      });
+      if (typeof v === 'string') return v;
+      if (typeof v === 'number') return v;
       return safeNum(v);
     });
   }
@@ -421,6 +440,7 @@ function validateNumber(
   idx: number,
   errors: ParseValidationReport['errors'],
   allowArray: boolean = false,
+  isRequiredFourMomentum: boolean = false,
 ): number | number[] | null {
   if (v === null || v === undefined) {
     errors.push({ severity: 'error', message: `字段 ${field} 第 ${idx} 个值为 null/undefined`, field });
@@ -429,12 +449,16 @@ function validateNumber(
   if (Array.isArray(v)) {
     if (!allowArray) {
       errors.push({ severity: 'warning', message: `字段 ${field} 第 ${idx} 个为数组（标量分支？），取首元素`, field });
-      return validateNumber(v[0], field, idx, errors, false);
+      return validateNumber(v[0], field, idx, errors, false, isRequiredFourMomentum) as number;
     }
-    return v.map((x, i) => validateNumber(x, field, idx * 1000 + i, errors, false) as number).filter(x => x !== null) as number[];
+    return v.map((x, i) => validateNumber(x, field, idx * 1000 + i, errors, false, isRequiredFourMomentum) as number).filter(x => x !== null) as number[];
   }
   if (typeof v === 'string') {
-    errors.push({ severity: 'error', message: `字段 ${field} 第 ${idx} 个值为字符串 "${v.slice(0, 40)}"，需要数值类型`, field });
+    errors.push({
+      severity: isRequiredFourMomentum ? 'error' : 'error',
+      message: `字段 ${field} 第 ${idx} 个值为字符串类型 "${v.slice(0, 40)}"，文件分支必须是数值数组（float/int/double），哪怕字符串内容像数字也不会被自动解析`,
+      field,
+    });
     return null;
   }
   if (typeof v !== 'number') {
@@ -528,7 +552,7 @@ export function validateBranchMappings(
           field: m.particleField,
         });
       }
-      validateNumber(v, m.particleField, idx, errors, maxParticles > 1);
+      validateNumber(v, m.particleField, idx, errors, maxParticles > 1, m.required);
     });
 
     const nonNull = values.flatMap(v => Array.isArray(v) ? v : [v]).filter(v => v !== null && v !== undefined);
@@ -608,10 +632,22 @@ function getMappedValue(
     }
     return NaN;
   }
+  if (typeof v === 'string') {
+    if (required) {
+      throw new Error(`[事件 ${eventIdx}] 字段 ${field} 是字符串类型 "${v.slice(0, 30)}"，必须是数值（float/int/double），哪怕字符串看起来像数字也不允许`);
+    }
+    return NaN;
+  }
   if (Array.isArray(v)) {
     if (particleIdx >= v.length) {
       if (required) {
         throw new Error(`[事件 ${eventIdx}] 字段 ${field} 数组长度=${v.length}，但当前事件粒子数=${nParticles}，越界访问粒子 ${particleIdx}`);
+      }
+      return NaN;
+    }
+    if (typeof v[particleIdx] === 'string') {
+      if (required) {
+        throw new Error(`[事件 ${eventIdx}] 字段 ${field}[${particleIdx}] 是字符串类型 "${String(v[particleIdx]).slice(0, 30)}"，必须是数值（float/int/double）`);
       }
       return NaN;
     }
@@ -683,7 +719,7 @@ function buildParticleStrict(
 export async function loadRealEvents(
   file: File,
   mappings: BranchMapping[],
-  maxEvents: number = 200,
+  maxEvents: number = Number.MAX_SAFE_INTEGER,
   progress?: (done: number, total: number) => void,
 ): Promise<PhysicsEvent[]> {
   const ext = file.name.split('.').pop()?.toLowerCase();
