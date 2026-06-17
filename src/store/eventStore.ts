@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { PhysicsEvent, BranchMapping } from '@/types/physics';
+import type { PhysicsEvent, BranchMapping, MetaBranchMapping } from '@/types/physics';
 import { generateMockEvents } from '@/services/mockData/eventGenerator';
 import { loadRealEvents } from '@/services/io/fileParser';
 
@@ -25,6 +25,7 @@ interface EventState {
   loadFromRealFile: (
     file: File,
     mappings: BranchMapping[],
+    metaMappings?: MetaBranchMapping[],
     maxEvents?: number,
     progress?: (done: number, total: number) => void,
   ) => Promise<void>;
@@ -97,14 +98,13 @@ export const useEventStore = create<EventState>((set, get) => ({
   },
 
   loadFromROOT: async (file: File) => {
-    await get().loadFromRealFile(file, []);
+    await get().loadFromRealFile(file, [], [], Number.MAX_SAFE_INTEGER);
   },
-
   loadFromHDF5: async (file: File) => {
-    await get().loadFromRealFile(file, []);
+    await get().loadFromRealFile(file, [], [], Number.MAX_SAFE_INTEGER);
   },
 
-  loadFromRealFile: async (file, mappings, maxEvents = Number.MAX_SAFE_INTEGER, progress) => {
+  loadFromRealFile: async (file, mappings, metaMappings, maxEvents = Number.MAX_SAFE_INTEGER, progress) => {
     set({ isLoading: true, error: null, loadingProgress: 0 });
     try {
       const ext = file.name.split('.').pop()?.toLowerCase();
@@ -112,6 +112,7 @@ export const useEventStore = create<EventState>((set, get) => ({
       const events = await loadRealEvents(
         file,
         mappings.length > 0 ? mappings : [],
+        metaMappings && metaMappings.length > 0 ? metaMappings : undefined,
         maxEvents,
         (d, t) => {
           const p = Math.round(d * 100 / t);

@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Database, Upload, FileJson, FileSpreadsheet, Loader2, X, CheckCircle2,
   AlertTriangle, AlertCircle, Info, ChevronRight, ChevronDown, ArrowLeft,
-  Wand2, Link2, RefreshCw, BarChart3, Eye, FileQuestion,
+  Wand2, Link2, RefreshCw, BarChart3, Eye, FileQuestion, Save, FolderOpen,
+  Trash2,
 } from 'lucide-react';
 import { useEventStore } from '@/store/eventStore';
 import {
@@ -11,9 +12,10 @@ import {
 } from '@/services/io/fileParser';
 import type {
   BranchMapping, EventBranchInfo, ParticleField,
-  ParseValidationReport,
+  ParseValidationReport, MetaBranchMapping, EventMetaField,
+  BranchMappingPreset,
 } from '@/types/physics';
-import { REQUIRED_PARTICLE_FIELDS, RECOMMENDED_PARTICLE_FIELDS } from '@/types/physics';
+import { REQUIRED_PARTICLE_FIELDS, RECOMMENDED_PARTICLE_FIELDS, EVENT_META_FIELDS } from '@/types/physics';
 
 type Step = 'source' | 'mapping' | 'validate' | 'loading' | 'done';
 
@@ -21,6 +23,12 @@ interface ImportDialogProps {
   open: boolean;
   onClose: () => void;
 }
+
+const META_FIELD_LABEL: Record<EventMetaField, string> = {
+  runNumber: '运行号 (Run)',
+  luminosityBlock: '亮度块 (LumiBlock)',
+  eventId: '原始事件号 (Event#)',
+};
 
 const FIELD_LABEL: Record<ParticleField, string> = {
   px: 'pₓ (GeV/c)',
@@ -59,6 +67,59 @@ const SEVERITY_STYLE: Record<string, { border: string; bg: string; icon: any; la
   },
 };
 
+const PRESET_STORAGE_KEY = 'hepviz_branch_mapping_presets';
+
+function loadPresets(): BranchMappingPreset[] {
+  try {
+    const raw = localStorage.getItem(PRESET_STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as BranchMappingPreset[];
+  } catch { return []; }
+}
+
+function savePresets(presets: BranchMappingPreset[]) {
+  localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
+}
+
+function applyPresetToMappings(
+  preset: BranchMappingPreset,
+  currentMappings: BranchMapping[],
+  currentMetaMappings: MetaBranchMapping[],
+  availableBranches: string[],
+): {
+  mappings: BranchMapping[];
+  metaMappings: MetaBranchMapping[];
+  hitFields: Set<ParticleField | EventMetaField>;
+  missingFields: Set<ParticleField | EventMetaField>;
+} {
+  const hitFields = new Set<ParticleField | EventMetaField>();
+  const missingFields = new Set<ParticleField | EventMetaField>();
+
+  const newMappings = currentMappings.map(m => {
+    const pm = preset.particleMappings.find(p => p.particleField === m.particleField);
+    if (!pm || !pm.branchName) return m;
+    if (availableBranches.includes(pm.branchName)) {
+      hitFields.add(m.particleField);
+      return { ...m, branchName: pm.branchName, validated: true };
+    }
+    missingFields.add(m.particleField);
+    return m;
+  });
+
+  const newMetaMappings = currentMetaMappings.map(m => {
+    const pm = preset.metaMappings.find(p => p.metaField === m.metaField);
+    if (!pm || !pm.branchName) return m;
+    if (availableBranches.includes(pm.branchName)) {
+      hitFields.add(m.metaField);
+      return { ...m, branchName: pm.branchName };
+    }
+    missingFields.add(m.metaField);
+    return m;
+  });
+
+  return { mappings: newMappings, metaMappings: newMetaMappings, hitFields, missingFields };
+}
+
 const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
   const loadMockData = useEventStore(s => s.loadMockData);
   const loadFromRealFile = useEventStore(s => s.loadFromRealFile);
@@ -74,15 +135,30 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
   const [mappings, setMappings] = useState<BranchMapping[]>(
     DEFAULT_BRANCH_MAPPING.map(m => ({ ...m, validated: false }))
   );
+  const [metaMappings, setMetaMappings] = useState<MetaBranchMapping[]>(
+    EVENT_META_FIELDS.map(f => ({ metaField: f, branchName: null, sampleValues: [] }))
+  );
+  const [metaPreview, setMetaPreview] = useState<Record<EventMetaField, (number | string | null)[]>>({
+    runNumber: [], luminosityBlock: [], eventId: [] });
   const [report, setReport] = useState<ParseValidationReport | null>(null);
   const [expandBranchList, setExpandBranchList] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [previewData, setPreviewData] = useState<Partial<Record<ParticleField, any[]>>>({});
+  const [previewData, setPreviewData] = useState<{ [K in ParticleField]?: any[] }>({} as { [K in ParticleField]?: any[] });
   const [nParticlesPerEvent, setNParticlesPerEvent] = useState<number[]>([]);
   const [probedFile, setProbedFile] = useState<File | null>(null);
   const [rawBranchData, setRawBranchData] = useState<Record<string, any[]>>({});
+  const [presets, setPresets] = useState<BranchMappingPreset[]>([]);
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
+  const [hitFields, setHitFields] = useState<Set<ParticleField | EventMetaField>>(new Set());
+  const [missingFields, setMissingFields] = useState<Set<ParticleField | EventMetaField>>(new Set());
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setPresets(loadPresets());
+  }, []);
 
   useEffect(() => {
     if (!open) {
@@ -92,8 +168,12 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
         setDetectedFormat(null);
         setBranches([]);
         setMappings(DEFAULT_BRANCH_MAPPING.map(m => ({ ...m, validated: false })));
+        setMetaMappings(EVENT_META_FIELDS.map(f => ({ metaField: f, branchName: null })));
+        setMetaPreview({ runNumber: [], luminosityBlock: [], eventId: [] });
         setReport(null);
         setProgress(0);
+        setHitFields(new Set());
+        setMissingFields(new Set());
       }, 200);
     }
   }, [open]);
@@ -110,11 +190,46 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
       setEventCount(r.eventCount);
       setBranches(r.branches);
       setMappings(r.mappings);
+      setMetaMappings(r.metaMappings);
       setPreviewData(r.preview);
+      setMetaPreview(r.metaPreview);
       setNParticlesPerEvent(r.nParticlesPerEvent);
       setRawBranchData(r.rawData.data);
+
+      const branchNames = r.branches.map(b => b.name);
+      const autoPreset = presets.find(p => p.format === r.format);
+      if (autoPreset) {
+        const result = applyPresetToMappings(autoPreset, r.mappings, r.metaMappings, branchNames);
+        if (result.hitFields.size > 0) {
+          setMappings(result.mappings);
+          setMetaMappings(result.metaMappings);
+          setHitFields(result.hitFields);
+          setMissingFields(result.missingFields);
+          const newPreview: Partial<Record<ParticleField, any[]>> = { ...r.preview };
+          result.mappings.forEach(m => {
+            if (m.branchName && r.rawData.data[m.branchName]) {
+              const col = r.rawData.data[m.branchName];
+              const arr: any[] = [];
+              for (let ev = 0; ev < r.nParticlesPerEvent.length; ev++) {
+                const v = col[ev];
+                if (Array.isArray(v)) arr.push([...v]);
+                else arr.push(v);
+              }
+              newPreview[m.particleField] = arr;
+            }
+          });
+          setPreviewData(newPreview);
+          const rpt = validateBranchMappings(result.mappings, r.branches, newPreview, r.nParticlesPerEvent);
+          setReport(rpt);
+          setStatusMsg(`已自动套用配置"${autoPreset.name}"：命中 ${result.hitFields.size} 个字段${result.missingFields.size > 0 ? `，缺少 ${result.missingFields.size} 个需要手动补` : ''}`);
+          setTimeout(() => setStatusMsg(null), 6000);
+        }
+      } else {
+        const rpt = validateBranchMappings(r.mappings, r.branches, r.preview, r.nParticlesPerEvent);
+        setReport(rpt);
+      }
+
       setStep('mapping');
-      setStatusMsg(null);
     } catch (e) {
       setStatusMsg(`探测失败: ${(e as Error).message}`);
       setTimeout(() => setStatusMsg(null), 8000);
@@ -175,6 +290,73 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
     });
   };
 
+  const handleUpdateMetaMapping = (metaField: EventMetaField, branchName: string | null) => {
+    setMetaMappings(prev => prev.map(m =>
+      m.metaField === metaField
+        ? { ...m, branchName, sampleValues: branchName ? rawBranchData[branchName]?.slice(0, 3) ?? [] : [] }
+        : m
+    ));
+  };
+
+  const handleSavePreset = () => {
+    if (!newPresetName.trim()) {
+      setStatusMsg('请输入配置名称');
+      setTimeout(() => setStatusMsg(null), 3000);
+      return;
+    }
+    if (!detectedFormat) return;
+    const newPreset: BranchMappingPreset = {
+      id: Date.now().toString(),
+      name: newPresetName.trim(),
+      format: detectedFormat,
+      createdAt: Date.now(),
+      particleMappings: mappings.map(m => ({ particleField: m.particleField, branchName: m.branchName })),
+      metaMappings: metaMappings.map(m => ({ metaField: m.metaField, branchName: m.branchName })),
+    };
+    const updated = [...presets, newPreset];
+    savePresets(updated);
+    setPresets(updated);
+    setShowSaveDialog(false);
+    setNewPresetName('');
+    setStatusMsg(`已保存配置"${newPreset.name}"`);
+    setTimeout(() => setStatusMsg(null), 3000);
+  };
+
+  const handleLoadPreset = (preset: BranchMappingPreset) => {
+    const branchNames = branches.map(b => b.name);
+    const result = applyPresetToMappings(preset, mappings, metaMappings, branchNames);
+    setMappings(result.mappings);
+    setMetaMappings(result.metaMappings);
+    setHitFields(result.hitFields);
+    setMissingFields(result.missingFields);
+    const newPreview: Partial<Record<ParticleField, any[]>> = { ...previewData };
+    result.mappings.forEach(m => {
+      if (m.branchName && rawBranchData[m.branchName]) {
+        const col = rawBranchData[m.branchName];
+        const arr: any[] = [];
+        for (let ev = 0; ev < nParticlesPerEvent.length; ev++) {
+          const v = col[ev];
+          if (Array.isArray(v)) arr.push([...v]);
+          else arr.push(v);
+        }
+        newPreview[m.particleField] = arr;
+      }
+    });
+    setPreviewData(newPreview);
+    const r = validateBranchMappings(result.mappings, branches, newPreview, nParticlesPerEvent);
+    setReport(r);
+    setShowPresetMenu(false);
+    setStatusMsg(`已加载配置"${preset.name}"：命中 ${result.hitFields.size} 个字段${result.missingFields.size > 0 ? `，缺少 ${result.missingFields.size} 个需要手动补` : ''}`);
+    setTimeout(() => setStatusMsg(null), 4000);
+  };
+
+  const handleDeletePreset = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = presets.filter(p => p.id !== id);
+    savePresets(updated);
+    setPresets(updated);
+  };
+
   const handleAutoMap = () => {
     setMappings(prev => prev.map(m => {
       if (m.branchName) return m;
@@ -205,7 +387,7 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
     setStep('loading');
     setProgress(0);
     try {
-      await loadFromRealFile(fileToLoad, mappings, Number.MAX_SAFE_INTEGER, (d, t) => setProgress(Math.round(d * 100 / t)));
+      await loadFromRealFile(fileToLoad, mappings, metaMappings, Number.MAX_SAFE_INTEGER, (d, t) => setProgress(Math.round(d * 100 / t)));
       setStep('done');
       setTimeout(() => { onClose(); }, 1500);
     } catch (e) {
@@ -341,13 +523,117 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
                     &nbsp;{detectedFormat?.toUpperCase()} · {eventCount} 事件 · {branches.length} 分支
                   </div>
                 </div>
-                <button
-                  onClick={handleAutoMap}
-                  className="flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 font-mono text-[10.5px] text-cyan-300 hover:bg-cyan-500/20 transition-colors"
-                >
-                  <Wand2 className="h-3 w-3" /> 智能匹配剩余
-                </button>
+                <div className="flex items-center gap-2">
+                  {showSaveDialog && (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        value={newPresetName}
+                        onChange={(e) => setNewPresetName(e.target.value)}
+                        placeholder="配置名称..."
+                        className="w-32 rounded-md border border-[#2A3352] bg-[#0B1228] px-2 py-1.5 font-mono text-[10.5px] text-slate-300 outline-none focus:border-cyan-500/60"
+                        autoFocus
+                      />
+                      <button
+                        onClick={handleSavePreset}
+                        className="flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 font-mono text-[10.5px] text-emerald-300 hover:bg-emerald-500/20"
+                      >
+                        <CheckCircle2 className="h-3 w-3" /> 保存
+                      </button>
+                      <button
+                        onClick={() => setShowSaveDialog(false)}
+                        className="flex items-center gap-1 rounded-md border border-slate-500/30 px-2 py-1.5 font-mono text-[10.5px] text-slate-400 hover:bg-slate-500/10"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {!showSaveDialog && (
+                    <>
+                      <div className="relative">
+                        <button
+                          onClick={() => setShowPresetMenu(s => !s)}
+                          className="flex items-center gap-1 rounded-md border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1.5 font-mono text-[10.5px] text-indigo-300 hover:bg-indigo-500/20 transition-colors"
+                        >
+                          <FolderOpen className="h-3 w-3" /> 加载配置
+                          {presets.length > 0 && (
+                            <span className="ml-0.5 rounded-full bg-indigo-500/30 px-1 text-[9px]">{presets.length}</span>
+                          )}
+                        </button>
+                        {showPresetMenu && (
+                          <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-md border border-[#2A3352] bg-[#0A1228] shadow-xl">
+                            {presets.length === 0 ? (
+                              <div className="px-3 py-2 font-mono text-[10.5px] text-slate-500">暂无保存的配置</div>
+                            ) : (
+                              <div className="max-h-48 overflow-y-auto py-1">
+                                {presets.map(p => (
+                                  <div
+                                    key={p.id}
+                                    onClick={() => handleLoadPreset(p)}
+                                    className="flex items-center justify-between gap-2 px-3 py-1.5 hover:bg-[#0E1836] cursor-pointer group"
+                                  >
+                                    <div>
+                                      <div className="font-mono text-[11px] text-slate-200">{p.name}</div>
+                                      <div className="font-mono text-[9px] text-slate-500">{p.format.toUpperCase()} · {new Date(p.createdAt).toLocaleDateString()}</div>
+                                    </div>
+                                    <button
+                                      onClick={(e) => handleDeletePreset(p.id, e)}
+                                      className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-rose-500/20 text-rose-400 transition-opacity"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => setShowSaveDialog(true)}
+                        className="flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 font-mono text-[10.5px] text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+                      >
+                        <Save className="h-3 w-3" /> 保存当前
+                      </button>
+                      <button
+                        onClick={handleAutoMap}
+                        className="flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 font-mono text-[10.5px] text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+                      >
+                        <Wand2 className="h-3 w-3" /> 智能匹配
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
+
+              {report && report.errors.length > 0 && (
+                <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 space-y-1.5">
+                  {report.errors.filter(e => e.severity === 'error').slice(0, 5).map((e, i) => (
+                    <div key={i} className="flex items-start gap-1.5">
+                      <AlertCircle className="h-3.5 w-3.5 text-rose-400 mt-0.5 flex-shrink-0" />
+                      <span className="font-mono text-[10.5px] text-rose-200">{e.message}</span>
+                    </div>
+                  ))}
+                  {report.errors.filter(e => e.severity === 'warning').slice(0, 3).map((e, i) => (
+                    <div key={'w' + i} className="flex items-start gap-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-400 mt-0.5 flex-shrink-0" />
+                      <span className="font-mono text-[10.5px] text-amber-200">{e.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {hitFields.size > 0 && (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5">
+                  <div className="font-mono text-[10.5px] text-emerald-300">
+                    ✓ 自动配置命中 {hitFields.size} 个字段
+                    {missingFields.size > 0 && (
+                      <span className="text-amber-300 ml-2">
+                        缺少 {missingFields.size} 个需要手动补: {[...missingFields].slice(0, 5).join(', ')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {FIELD_GROUP.map(g => (
@@ -359,10 +645,16 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
                     <div className="divide-y divide-[#1A2340]">
                       {g.fields.map(f => {
                         const m = mappings.find(mm => mm.particleField === f)!;
+                        const fieldErrors = report?.errors.filter(e => e.field === f && e.severity === 'error') || [];
+                        const fieldWarnings = report?.errors.filter(e => e.field === f && e.severity === 'warning') || [];
+                        const hasError = fieldErrors.length > 0;
+                        const values = previewData[f];
+                        const sampleValues = values?.slice(0, 3).flatMap(v => Array.isArray(v) ? v.slice(0, 2) : [v]).slice(0, 4);
+                        const isHit = hitFields.has(f);
                         return (
-                          <div key={f} className="grid grid-cols-[180px_1fr_40px] items-center gap-3 px-3 py-2">
+                          <div key={f} className={`grid grid-cols-[180px_1fr_200px_40px] items-center gap-3 px-3 py-2 ${hasError ? 'bg-rose-500/5' : ''} ${isHit ? 'bg-emerald-500/5' : ''}`}>
                             <div className="flex items-center gap-1.5">
-                              <Link2 className="h-3 w-3 text-slate-500" />
+                              <Link2 className={`h-3 w-3 ${isHit ? 'text-emerald-400' : 'text-slate-500'}`} />
                               <span className="font-mono text-[11px] text-slate-300">{FIELD_LABEL[f]}</span>
                               <span className="font-mono text-[9.5px] text-slate-600">({f})</span>
                             </div>
@@ -370,11 +662,13 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
                               value={m.branchName || ''}
                               onChange={(e) => handleUpdateMapping(f, e.target.value || null)}
                               className={`w-full rounded-md border bg-[#0B1228] px-2 py-1.5 font-mono text-[11px] outline-none transition-colors ${
-                                m.validated
-                                  ? 'border-emerald-500/40 text-emerald-200 focus:border-emerald-500'
-                                  : g.required
-                                    ? 'border-rose-500/30 text-slate-300 focus:border-rose-500/60'
-                                    : 'border-[#2A3352] text-slate-300 focus:border-cyan-500/60'
+                                hasError
+                                  ? 'border-rose-500/50 text-rose-200 focus:border-rose-500'
+                                  : m.validated
+                                    ? 'border-emerald-500/40 text-emerald-200 focus:border-emerald-500'
+                                    : g.required
+                                      ? 'border-rose-500/30 text-slate-300 focus:border-rose-500/60'
+                                      : 'border-[#2A3352] text-slate-300 focus:border-cyan-500/60'
                               }`}
                             >
                               <option value="">-- 不映射 / 使用默认推导 --</option>
@@ -384,6 +678,31 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
                                 </option>
                               ))}
                             </select>
+                            <div className="flex items-center gap-1 overflow-hidden">
+                              {sampleValues && sampleValues.length > 0 && (
+                                <>
+                                  {sampleValues.slice(0, 4).map((v, i) => (
+                                    <span
+                                      key={i}
+                                      className={`font-mono text-[9px] px-1.5 py-0.5 rounded ${
+                                        typeof v === 'string'
+                                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                          : 'bg-[#0E1836] text-slate-400'
+                                      }`}
+                                      title={String(v)}
+                                    >
+                                      {typeof v === 'string' ? `"${v.slice(0, 8)}"` : v !== null && v !== undefined ? Number(v).toFixed(2) : 'null'}
+                                    </span>
+                                  ))}
+                                </>
+                              )}
+                              {fieldWarnings.length > 0 && (
+                                <AlertTriangle className="h-3 w-3 text-amber-400 flex-shrink-0" aria-label={fieldWarnings[0].message} />
+                              )}
+                              {fieldErrors.length > 0 && (
+                                <AlertCircle className="h-3 w-3 text-rose-400 flex-shrink-0" aria-label={fieldErrors[0].message} />
+                              )}
+                            </div>
                             {m.validated
                               ? <CheckCircle2 className="h-4 w-4 text-emerald-400" />
                               : g.required
@@ -395,6 +714,60 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
                     </div>
                   </div>
                 ))}
+
+                <div className="rounded-lg border border-[#1E2742] bg-[#070B18] overflow-hidden">
+                  <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1E2742] bg-[#0A1228]">
+                    <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono">事件元信息</span>
+                    <span className="font-mono text-[11px] text-slate-400">用于事件浏览器显示，可选</span>
+                  </div>
+                  <div className="divide-y divide-[#1A2340]">
+                    {metaMappings.map(mm => {
+                      const hasMeta = metaPreview[mm.metaField]?.some(v => v !== null && v !== undefined);
+                      const sampleMeta = metaPreview[mm.metaField]?.slice(0, 3);
+                      const isHit = hitFields.has(mm.metaField);
+                      return (
+                        <div key={mm.metaField} className={`grid grid-cols-[180px_1fr_200px] items-center gap-3 px-3 py-2 ${isHit ? 'bg-emerald-500/5' : ''}`}>
+                          <div className="flex items-center gap-1.5">
+                            <BarChart3 className={`h-3 w-3 ${isHit ? 'text-emerald-400' : 'text-slate-500'}`} />
+                            <span className="font-mono text-[11px] text-slate-300">{META_FIELD_LABEL[mm.metaField]}</span>
+                          </div>
+                          <select
+                            value={mm.branchName || ''}
+                            onChange={(e) => handleUpdateMetaMapping(mm.metaField, e.target.value || null)}
+                            className={`w-full rounded-md border bg-[#0B1228] px-2 py-1.5 font-mono text-[11px] outline-none transition-colors ${
+                              mm.branchName
+                                ? 'border-cyan-500/30 text-cyan-200 focus:border-cyan-500'
+                                : 'border-[#2A3352] text-slate-400 focus:border-cyan-500/60'
+                            }`}
+                          >
+                            <option value="">-- 不映射（使用默认编号）--</option>
+                            {branches.filter(b => b.type === 'scalar').map(b => (
+                              <option key={b.name} value={b.name}>
+                                {b.name}  [{b.dtype}]
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-1 overflow-hidden">
+                            {sampleMeta && sampleMeta.length > 0 && (
+                              <>
+                                {sampleMeta.slice(0, 4).map((v, i) => (
+                                  <span
+                                    key={i}
+                                    className={`font-mono text-[9px] px-1.5 py-0.5 rounded ${
+                                      hasMeta ? 'bg-cyan-500/10 text-cyan-300' : 'bg-[#0E1836] text-slate-500'
+                                    }`}
+                                  >
+                                    {v !== null && v !== undefined ? String(v).slice(0, 10) : '—'}
+                                  </span>
+                                ))}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
               <details open={expandBranchList} className="rounded-lg border border-[#1E2742] bg-[#070B18]">

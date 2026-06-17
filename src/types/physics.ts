@@ -107,8 +107,17 @@ export type ParticleField =
   | 'charge' | 'pdgId' | 'mass'
   | 'vx' | 'vy' | 'vz';
 
+export type EventMetaField = 'runNumber' | 'luminosityBlock' | 'eventId';
+
 export const REQUIRED_PARTICLE_FIELDS: ParticleField[] = ['px', 'py', 'pz', 'energy'];
 export const RECOMMENDED_PARTICLE_FIELDS: ParticleField[] = ['eta', 'phi', 'pt', 'charge', 'pdgId', 'mass'];
+export const EVENT_META_FIELDS: EventMetaField[] = ['runNumber', 'luminosityBlock', 'eventId'];
+
+export const EVENT_META_ALIASES: Record<EventMetaField, string[]> = {
+  runNumber: ['runNumber', 'RunNumber', 'run', 'Run', 'runNum', 'run_number', 'nRun', 'runNo', 'run_id'],
+  luminosityBlock: ['luminosityBlock', 'LumiBlock', 'lumiBlock', 'lb', 'lbNumber', 'lumi', 'lumi_block', 'lumiId'],
+  eventId: ['eventId', 'EventNumber', 'eventNumber', 'evt', 'event', 'evtNum', 'event_number', 'nEvent', 'evtNo', 'event_id'],
+};
 
 export interface BranchMapping {
   particleField: ParticleField;
@@ -116,6 +125,13 @@ export interface BranchMapping {
   required: boolean;
   validated: boolean;
   error?: string;
+  sampleValues?: (number | string)[];
+  dtype?: string;
+}
+
+export interface MetaBranchMapping {
+  metaField: EventMetaField;
+  branchName: string | null;
   sampleValues?: (number | string)[];
   dtype?: string;
 }
@@ -171,4 +187,29 @@ export interface PeakCandidate {
   deltaR: number;
   histogramKey: DecayChannelKey;
   binIndex: number;
+}
+
+export type FieldSource = 'file' | 'derived';
+
+export interface ParticleWithSource extends Particle {
+  fieldSources: Partial<Record<ParticleField, FieldSource>>;
+  rawBranchNames: Partial<Record<ParticleField, string>>;
+}
+
+export interface BranchMappingPreset {
+  id: string;
+  name: string;
+  format: 'root' | 'hdf5';
+  createdAt: number;
+  particleMappings: Array<{ particleField: ParticleField; branchName: string | null }>;
+  metaMappings: Array<{ metaField: EventMetaField; branchName: string | null }>;
+}
+
+export interface PhysicsEventWithMeta extends PhysicsEvent {
+  rawEventId?: number;
+  rawRunNumber?: number;
+  rawLuminosityBlock?: number;
+  eventIdSource: FieldSource;
+  runNumberSource: FieldSource;
+  luminosityBlockSource: FieldSource;
 }

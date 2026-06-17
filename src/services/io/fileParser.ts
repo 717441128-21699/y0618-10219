@@ -1,8 +1,13 @@
 import type {
   Particle, PhysicsEvent, EnergyDeposit, Vertex, DetectorLayer,
   ParticleField, BranchMapping, EventBranchInfo, ParseValidationReport,
+  EventMetaField, MetaBranchMapping, FieldSource, ParticleWithSource,
+  PhysicsEventWithMeta,
 } from '@/types/physics';
-import { ParticleType, DetectorLayer as DLayer } from '@/types/physics';
+import {
+  ParticleType, DetectorLayer as DLayer,
+  EVENT_META_FIELDS, EVENT_META_ALIASES,
+} from '@/types/physics';
 import {
   generateHelixTrack, generateStraightTrack, generateJetConePoints,
 } from '@/services/physics/kinematics';
@@ -115,6 +120,28 @@ export function autoMapBranches(branchNames: string[]): BranchMapping[] {
   });
 }
 
+export function autoMapMetaBranches(branchNames: string[]): MetaBranchMapping[] {
+  const lowerBranches = branchNames.map(b => ({ orig: b, lower: b.toLowerCase() }));
+  return EVENT_META_FIELDS.map(metaField => {
+    let matched: string | null = null;
+    const aliases = EVENT_META_ALIASES[metaField];
+    for (const alias of aliases) {
+      const aLower = alias.toLowerCase().replace(/[^a-z0-9_]/g, '');
+      const found = lowerBranches.find(b => {
+        const bClean = b.lower.replace(/[^a-z0-9_]/g, '');
+        return b.lower === alias.toLowerCase() ||
+          b.lower.endsWith('.' + alias.toLowerCase()) ||
+          b.lower.endsWith('_' + alias.toLowerCase()) ||
+          bClean === aLower ||
+          bClean.endsWith('_' + aLower) ||
+          bClean.endsWith('.' + aLower);
+      });
+      if (found) { matched = found.orig; break; }
+    }
+    return { metaField, branchName: matched };
+  });
+}
+
 function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -130,6 +157,7 @@ interface ParsedFileData {
   branches: EventBranchInfo[];
   data: Record<string, any[]>;
   nParticlesPerEvent: number[];
+  metaData: Record<EventMetaField, (number | string | null)[]>;
 }
 
 function safeNum(v: any, strict: boolean = true): number | null {
@@ -203,6 +231,14 @@ async function parseROOTFile(file: File, readData: boolean = true, maxPreview: n
     throw new Error(`ROOT TTree(${treeName}) 中未找到任何分支(leaves)，文件可能已损坏或为空`);
   }
 
+  const branchNames = branches.map(b => b.name);
+  const metaMappings = autoMapMetaBranches(branchNames);
+  const metaData: Record<EventMetaField, (number | string | null)[]> = {
+    runNumber: [],
+    luminosityBlock: [],
+    eventId: [],
+  };
+
   const data: Record<string, any[]> = {};
   const nParticlesPerEvent: number[] = [];
   const nToRead = readData ? Math.min(maxPreview, eventCount) : 0;
@@ -260,6 +296,17 @@ async function parseROOTFile(file: File, readData: boolean = true, maxPreview: n
           }
         }
       }
+
+      metaMappings.forEach(mm => {
+        if (mm.branchName && data[mm.branchName]) {
+          let rawVal = data[mm.branchName][ev];
+          if (Array.isArray(rawVal)) rawVal = rawVal[0];
+          metaData[mm.metaField][ev] = rawVal;
+        } else {
+          metaData[mm.metaField][ev] = null;
+        }
+      });
+
       nParticlesPerEvent[ev] = nPartThisEvent;
     }
   }
@@ -270,6 +317,7 @@ async function parseROOTFile(file: File, readData: boolean = true, maxPreview: n
     branches,
     data,
     nParticlesPerEvent,
+    metaData,
   };
 }
 
@@ -340,6 +388,14 @@ async function parseHDF5File(file: File, readData: boolean = true, maxPreview: n
     throw new Error('HDF5 文件未找到任何可读取的 Dataset');
   }
 
+  const branchNames = branches.map(b => b.name);
+  const metaMappings = autoMapMetaBranches(branchNames);
+  const metaData: Record<EventMetaField, (number | string | null)[]> = {
+    runNumber: [],
+    luminosityBlock: [],
+    eventId: [],
+  };
+
   const data: Record<string, any[]> = {};
   const nParticlesPerEvent: number[] = [];
   const nToRead = Math.min(maxPreview, eventCount);
@@ -366,9 +422,19 @@ async function parseHDF5File(file: File, readData: boolean = true, maxPreview: n
       if (Array.isArray(v) && v.length > nPart) nPart = v.length;
     }
     nParticlesPerEvent[ev] = nPart;
+
+    metaMappings.forEach(mm => {
+      if (mm.branchName && data[mm.branchName]) {
+        let rawVal = data[mm.branchName][ev];
+        if (Array.isArray(rawVal)) rawVal = rawVal[0];
+        metaData[mm.metaField][ev] = rawVal;
+      } else {
+        metaData[mm.metaField][ev] = null;
+      }
+    });
   }
 
-  return { format: 'hdf5', eventCount, branches, data, nParticlesPerEvent };
+  return { format: 'hdf5', eventCount, branches, data, nParticlesPerEvent, metaData };
 }
 
 export async function probeFile(file: File): Promise<{
@@ -376,7 +442,9 @@ export async function probeFile(file: File): Promise<{
   eventCount: number;
   branches: EventBranchInfo[];
   mappings: BranchMapping[];
+  metaMappings: MetaBranchMapping[];
   preview: Partial<Record<ParticleField, any[]>>;
+  metaPreview: Record<EventMetaField, (number | string | null)[]>;
   nParticlesPerEvent: number[];
   rawData: ParsedFileData;
 }> {
@@ -402,7 +470,13 @@ export async function probeFile(file: File): Promise<{
 
   const branchNames = parsed.branches.map(b => b.name);
   const mappings = autoMapBranches(branchNames);
+  const metaMappings = autoMapMetaBranches(branchNames);
   const preview: Partial<Record<ParticleField, any[]>> = {};
+  const metaPreview: Record<EventMetaField, (number | string | null)[]> = {
+    runNumber: [...parsed.metaData.runNumber],
+    luminosityBlock: [...parsed.metaData.luminosityBlock],
+    eventId: [...parsed.metaData.eventId],
+  };
   const nRead = parsed.nParticlesPerEvent.length;
 
   mappings.forEach(m => {
@@ -423,12 +497,28 @@ export async function probeFile(file: File): Promise<{
     }
   });
 
+  metaMappings.forEach(mm => {
+    if (!mm.branchName) return;
+    const col = parsed.data[mm.branchName];
+    if (!col) return;
+    mm.sampleValues = col.slice(0, 5).map(v => Array.isArray(v) ? v[0] : v).filter(v => v !== null && v !== undefined);
+    const firstNonNull = col.find(v => {
+      const val = Array.isArray(v) ? v[0] : v;
+      return val !== null && val !== undefined;
+    });
+    if (firstNonNull !== undefined) {
+      mm.dtype = typeof firstNonNull === 'number' ? 'float' : typeof firstNonNull;
+    }
+  });
+
   return {
     format,
     eventCount: parsed.eventCount,
     branches: parsed.branches,
     mappings,
+    metaMappings,
     preview,
+    metaPreview,
     nParticlesPerEvent: parsed.nParticlesPerEvent,
     rawData: parsed,
   };
@@ -681,7 +771,9 @@ function buildParticleStrict(
     & Partial<Record<ParticleField, number>>,
   id: number,
   vertex: Vertex,
-): Particle {
+  fieldSources: Partial<Record<ParticleField, FieldSource>>,
+  rawBranchNames: Partial<Record<ParticleField, string>>,
+): ParticleWithSource {
   const { px, py, pz, energy: E } = row;
   if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz) || !Number.isFinite(E)) {
     throw new Error(`粒子 ${id} 四动量不完整 (px=${px}, py=${py}, pz=${pz}, E=${E})`);
@@ -701,6 +793,20 @@ function buildParticleStrict(
     : type === ParticleType.TAU ? 1.777
     : type === ParticleType.BQUARK ? 4.7
     : 0;
+
+  const sources: Partial<Record<ParticleField, FieldSource>> = {
+    px: fieldSources.px || 'file',
+    py: fieldSources.py || 'file',
+    pz: fieldSources.pz || 'file',
+    energy: fieldSources.energy || 'file',
+    pt: Number.isFinite(row.pt) ? (fieldSources.pt || 'file') : 'derived',
+    eta: Number.isFinite(row.eta) ? (fieldSources.eta || 'file') : 'derived',
+    phi: Number.isFinite(row.phi) ? (fieldSources.phi || 'file') : 'derived',
+    charge: Number.isFinite(row.charge) ? (fieldSources.charge || 'file') : 'derived',
+    pdgId: Number.isFinite(row.pdgId) ? (fieldSources.pdgId || 'file') : 'derived',
+    mass: Number.isFinite(row.mass) ? (fieldSources.mass || 'file') : 'derived',
+  };
+
   let trackPoints;
   if (type === ParticleType.PHOTON) {
     trackPoints = generateStraightTrack(vertex, phi, eta, 30, 3500);
@@ -713,15 +819,18 @@ function buildParticleStrict(
     id, type, charge, px, py, pz, energy: E,
     eta, phi, pt, mass, trackPoints, vertex,
     isSignal: pt > 5,
+    fieldSources: sources,
+    rawBranchNames,
   };
 }
 
 export async function loadRealEvents(
   file: File,
   mappings: BranchMapping[],
+  metaMappings?: MetaBranchMapping[],
   maxEvents: number = Number.MAX_SAFE_INTEGER,
   progress?: (done: number, total: number) => void,
-): Promise<PhysicsEvent[]> {
+): Promise<PhysicsEventWithMeta[]> {
   const ext = file.name.split('.').pop()?.toLowerCase();
   let format: FileFormat = ext === 'root' ? 'root' : 'hdf5';
   let parsed: ParsedFileData;
@@ -760,7 +869,14 @@ export async function loadRealEvents(
     }
   }
 
-  const events: PhysicsEvent[] = [];
+  const metaMap = new Map<EventMetaField, string>();
+  if (metaMappings) {
+    metaMappings.forEach(mm => {
+      if (mm.branchName) metaMap.set(mm.metaField, mm.branchName);
+    });
+  }
+
+  const events: PhysicsEventWithMeta[] = [];
   const pxCol = parsed.data[mapByField.get('px')!];
   const pyCol = parsed.data[mapByField.get('py')!];
   const pzCol = parsed.data[mapByField.get('pz')!];
@@ -774,6 +890,15 @@ export async function loadRealEvents(
   const vxCol = mapByField.get('vx') ? parsed.data[mapByField.get('vx')!] : undefined;
   const vyCol = mapByField.get('vy') ? parsed.data[mapByField.get('vy')!] : undefined;
   const vzCol = mapByField.get('vz') ? parsed.data[mapByField.get('vz')!] : undefined;
+
+  const runCol = metaMap.get('runNumber') ? parsed.data[metaMap.get('runNumber')!] : undefined;
+  const lumiCol = metaMap.get('luminosityBlock') ? parsed.data[metaMap.get('luminosityBlock')!] : undefined;
+  const evtIdCol = metaMap.get('eventId') ? parsed.data[metaMap.get('eventId')!] : undefined;
+
+  const rawBranchNames: Partial<Record<ParticleField, string>> = {};
+  for (const m of mappings) {
+    if (m.branchName) rawBranchNames[m.particleField] = m.branchName;
+  }
 
   for (let ev = 0; ev < eventCount; ev++) {
     let nParticles = 1;
@@ -798,7 +923,17 @@ export async function loadRealEvents(
       z: Number.isFinite(vz) ? vz : 0,
     };
 
-    const particles: Particle[] = [];
+    const rawRun = runCol ? runCol[ev] : null;
+    const rawLumi = lumiCol ? lumiCol[ev] : null;
+    const rawEvtId = evtIdCol ? evtIdCol[ev] : null;
+    const runNumVal = Array.isArray(rawRun) ? rawRun[0] : rawRun;
+    const lumiVal = Array.isArray(rawLumi) ? rawLumi[0] : rawLumi;
+    const evtVal = Array.isArray(rawEvtId) ? rawEvtId[0] : rawEvtId;
+    const runNumber = typeof runNumVal === 'number' ? runNumVal : safeNum(runNumVal, false);
+    const luminosityBlock = typeof lumiVal === 'number' ? lumiVal : safeNum(lumiVal, false);
+    const eventId = typeof evtVal === 'number' ? evtVal : safeNum(evtVal, false);
+
+    const particles: ParticleWithSource[] = [];
     let idSeed = ev * 10000;
 
     for (let i = 0; i < nParticles; i++) {
@@ -808,14 +943,35 @@ export async function loadRealEvents(
         const pz = getMappedValue(pzCol, ev, i, nParticles, 'pz', true);
         const energy = getMappedValue(eCol, ev, i, nParticles, 'energy', true);
         const row: any = { px, py, pz, energy };
-        if (ptCol) row.pt = getMappedValue(ptCol, ev, i, nParticles, 'pt', false);
-        if (etaCol) row.eta = getMappedValue(etaCol, ev, i, nParticles, 'eta', false);
-        if (phiCol) row.phi = getMappedValue(phiCol, ev, i, nParticles, 'phi', false);
-        if (qCol) row.charge = getMappedValue(qCol, ev, i, nParticles, 'charge', false);
-        if (pdgCol) row.pdgId = getMappedValue(pdgCol, ev, i, nParticles, 'pdgId', false);
-        if (mCol) row.mass = getMappedValue(mCol, ev, i, nParticles, 'mass', false);
+        const sources: Partial<Record<ParticleField, FieldSource>> = {
+          px: 'file', py: 'file', pz: 'file', energy: 'file',
+        };
+        if (ptCol) {
+          const v = getMappedValue(ptCol, ev, i, nParticles, 'pt', false);
+          if (Number.isFinite(v)) { row.pt = v; sources.pt = 'file'; }
+        }
+        if (etaCol) {
+          const v = getMappedValue(etaCol, ev, i, nParticles, 'eta', false);
+          if (Number.isFinite(v)) { row.eta = v; sources.eta = 'file'; }
+        }
+        if (phiCol) {
+          const v = getMappedValue(phiCol, ev, i, nParticles, 'phi', false);
+          if (Number.isFinite(v)) { row.phi = v; sources.phi = 'file'; }
+        }
+        if (qCol) {
+          const v = getMappedValue(qCol, ev, i, nParticles, 'charge', false);
+          if (Number.isFinite(v)) { row.charge = v; sources.charge = 'file'; }
+        }
+        if (pdgCol) {
+          const v = getMappedValue(pdgCol, ev, i, nParticles, 'pdgId', false);
+          if (Number.isFinite(v)) { row.pdgId = v; sources.pdgId = 'file'; }
+        }
+        if (mCol) {
+          const v = getMappedValue(mCol, ev, i, nParticles, 'mass', false);
+          if (Number.isFinite(v)) { row.mass = v; sources.mass = 'file'; }
+        }
 
-        const p = buildParticleStrict(row, idSeed++, vertex);
+        const p = buildParticleStrict(row, idSeed++, vertex, sources, rawBranchNames);
         particles.push(p);
       } catch (e) {
         const msg = (e as Error).message;
@@ -863,9 +1019,15 @@ export async function loadRealEvents(
     const metPhi = Math.atan2(metY, metX);
 
     events.push({
-      eventId: 100000 + ev,
-      runNumber: 1,
-      luminosityBlock: 1 + ev,
+      eventId: Number.isFinite(eventId) ? eventId! : 100000 + ev,
+      runNumber: Number.isFinite(runNumber) ? runNumber! : 1,
+      luminosityBlock: Number.isFinite(luminosityBlock) ? luminosityBlock! : 1 + ev,
+      rawEventId: Number.isFinite(eventId) ? eventId! : undefined,
+      rawRunNumber: Number.isFinite(runNumber) ? runNumber! : undefined,
+      rawLuminosityBlock: Number.isFinite(luminosityBlock) ? luminosityBlock! : undefined,
+      eventIdSource: Number.isFinite(eventId) ? 'file' : 'derived',
+      runNumberSource: Number.isFinite(runNumber) ? 'file' : 'derived',
+      luminosityBlockSource: Number.isFinite(luminosityBlock) ? 'file' : 'derived',
       timestamp: Date.now() + ev * 1000,
       particles,
       energyDeposits: deposits,

@@ -1,17 +1,32 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Table, ChevronDown, ChevronUp, X, Link2, Trash2, Atom,
+  Table, ChevronDown, ChevronUp, X, Link2, Trash2, Atom, Database, Calculator, EyeOff,
 } from 'lucide-react';
 import { useEventStore } from '@/store/eventStore';
 import { useFilterStore } from '@/store/filterStore';
 import { useViewStore } from '@/store/viewStore';
 import { useAnalysisStore } from '@/store/analysisStore';
-import type { Particle } from '@/types/physics';
+import type { Particle, ParticleField, FieldSource, ParticleWithSource } from '@/types/physics';
 import { ParticleType } from '@/types/physics';
 import { PARTICLE_COLORS, PARTICLE_SYMBOLS, PARTICLE_NAMES } from '@/utils/colors';
 import { formatEnergy, formatMass } from '@/utils/format';
 
 type SortKey = 'id' | 'type' | 'pt' | 'eta' | 'phi' | 'energy' | 'charge';
+
+const DERIVABLE_FIELDS: ParticleField[] = ['pt', 'eta', 'phi', 'charge', 'pdgId', 'mass'];
+
+const FieldSourceIndicator: React.FC<{ source: FieldSource | undefined }> = ({ source }) => {
+  if (!source) return null;
+  return (
+    <span className={`inline-flex items-center justify-center rounded-full w-3 h-3 ${
+      source === 'file'
+        ? 'bg-emerald-500/30 text-emerald-400'
+        : 'bg-indigo-500/30 text-indigo-400'
+    }`} title={source === 'file' ? '原始分支值' : '推导计算值'}>
+      {source === 'file' ? <Database className="h-1.5 w-1.5" /> : <Calculator className="h-1.5 w-1.5" />}
+    </span>
+  );
+};
 
 const ParticleTable: React.FC = () => {
   const event = useEventStore(s => s.currentEvent);
@@ -27,6 +42,7 @@ const ParticleTable: React.FC = () => {
   const [sortKey, setSortKey] = useState<SortKey>('pt');
   const [sortAsc, setSortAsc] = useState(false);
   const [filterType, setFilterType] = useState<ParticleType | 'all'>('all');
+  const [showDerived, setShowDerived] = useState(false);
 
   const filteredParticles = useMemo(() => {
     if (!event) return [];
@@ -72,17 +88,51 @@ const ParticleTable: React.FC = () => {
     }
   };
 
-  const SortHeader = ({ k, label }: { k: SortKey; label: string }) => (
-    <button
-      onClick={() => handleSort(k)}
-      className="flex w-full items-center gap-0.5 font-mono hover:text-white transition-colors"
-    >
-      {label}
-      {sortKey === k && (
-        sortAsc ? <ChevronUp className="h-2.5 w-2.5 text-cyan-300" /> : <ChevronDown className="h-2.5 w-2.5 text-cyan-300" />
+  const SortHeader = ({ k, label, showSource = false }: { k: SortKey; label: string; showSource?: boolean }) => (
+    <div className="flex w-full items-center gap-1">
+      <button
+        onClick={() => handleSort(k)}
+        className="flex items-center gap-0.5 font-mono hover:text-white transition-colors"
+      >
+        {label}
+        {sortKey === k && (
+          sortAsc ? <ChevronUp className="h-2.5 w-2.5 text-cyan-300" /> : <ChevronDown className="h-2.5 w-2.5 text-cyan-300" />
+        )}
+      </button>
+      {showSource && (
+        <div className="ml-auto flex items-center gap-0.5" title="字段来源：绿色=原始分支，紫色=推导计算">
+          <Database className="h-1.5 w-1.5 text-emerald-400" />
+          <Calculator className="h-1.5 w-1.5 text-indigo-400" />
+        </div>
       )}
-    </button>
+    </div>
   );
+
+  const getCellValue = (p: ParticleWithSource, field: ParticleField): string => {
+    const val = p[field];
+    if (typeof val === 'number') {
+      if (field === 'pt' || field === 'energy' || field === 'mass') return val.toFixed(1);
+      if (field === 'eta' || field === 'phi') return val.toFixed(2);
+    }
+    if (!showDerived) {
+      return String(val);
+    }
+    const source = p.fieldSources?.[field];
+    if (source === 'file') {
+      return String(val);
+    }
+    if (source === 'derived' && p.rawBranchNames?.[field]) {
+      return `[原始分支: ${p.rawBranchNames[field]}] ${typeof val === 'number' ? (field === 'pt' || field === 'energy' ? val.toFixed(1) : val.toFixed(2)) : val}`;
+    }
+    return String(val);
+  };
+
+  const getCellClass = (p: ParticleWithSource, field: ParticleField): string => {
+    const source = p.fieldSources?.[field];
+    if (source === 'file') return 'text-emerald-200';
+    if (source === 'derived') return 'text-indigo-200';
+    return '';
+  };
 
   if (!event) {
     return (
@@ -96,6 +146,7 @@ const ParticleTable: React.FC = () => {
   }
 
   const particleTypesInEvent = Array.from(new Set(event.particles.map(p => p.type)));
+  const hasSourceData = (event.particles[0] as ParticleWithSource)?.fieldSources !== undefined;
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-hidden">
@@ -106,6 +157,22 @@ const ParticleTable: React.FC = () => {
             粒子列表
           </div>
           <div className="flex items-center gap-2">
+            {hasSourceData && (
+              <button
+                onClick={() => setShowDerived(!showDerived)}
+                className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9.5px] font-mono transition-colors ${
+                  showDerived
+                    ? 'border-indigo-500/60 bg-indigo-500/15 text-indigo-300'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                }`}
+                title={showDerived ? '显示推导值' : '显示原始值'}
+              >
+                {showDerived
+                  ? <><Calculator className="h-2 w-2" /> 显示推导值</>
+                  : <><Database className="h-2 w-2" /> 显示原始值</>
+                }
+              </button>
+            )}
             {selectedIds.size > 0 && (
               <button
                 onClick={clearSelection}
@@ -148,6 +215,29 @@ const ParticleTable: React.FC = () => {
             </button>
           ))}
         </div>
+
+        {hasSourceData && (
+          <div className="flex items-center gap-3 text-[9px] font-mono text-slate-400 border-t border-[#1E2742] pt-2">
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-emerald-500/50" /> 原始分支值
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-indigo-500/50" /> 推导计算值
+            </span>
+            {DERIVABLE_FIELDS.map(f => {
+              const anyDerived = event.particles.some((p: any) => p.fieldSources?.[f] === 'derived');
+              const anyFile = event.particles.some((p: any) => p.fieldSources?.[f] === 'file');
+              if (!anyDerived && !anyFile) return null;
+              return (
+                <span key={f} className="flex items-center gap-0.5">
+                  {f}:
+                  {anyFile && <Database className="h-1.5 w-1.5 text-emerald-400" />}
+                  {anyDerived && <Calculator className="h-1.5 w-1.5 text-indigo-400" />}
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto rounded-md border border-[#2A3352] bg-[#070B18] text-[10.5px] font-mono">
@@ -156,16 +246,17 @@ const ParticleTable: React.FC = () => {
             <tr>
               <th className="w-6 px-1.5 py-1.5 text-left">#</th>
               <th className="px-1.5 py-1.5 text-left"><SortHeader k="type" label="类型" /></th>
-              <th className="px-1.5 py-1.5 text-right"><SortHeader k="pt" label="pT" /></th>
-              <th className="px-1.5 py-1.5 text-right"><SortHeader k="eta" label="η" /></th>
-              <th className="px-1.5 py-1.5 text-right"><SortHeader k="phi" label="φ" /></th>
+              <th className="px-1.5 py-1.5 text-right"><SortHeader k="pt" label="pT" showSource={hasSourceData} /></th>
+              <th className="px-1.5 py-1.5 text-right"><SortHeader k="eta" label="η" showSource={hasSourceData} /></th>
+              <th className="px-1.5 py-1.5 text-right"><SortHeader k="phi" label="φ" showSource={hasSourceData} /></th>
               <th className="px-1.5 py-1.5 text-right"><SortHeader k="energy" label="E" /></th>
-              <th className="px-1.5 py-1.5 text-right"><SortHeader k="charge" label="Q" /></th>
+              <th className="px-1.5 py-1.5 text-right"><SortHeader k="charge" label="Q" showSource={hasSourceData} /></th>
             </tr>
           </thead>
           <tbody>
             {filteredParticles.map((p, i) => {
               const selected = selectedIds.has(p.id);
+              const ps = p as ParticleWithSource;
               return (
                 <tr
                   key={p.id}
@@ -182,12 +273,32 @@ const ParticleTable: React.FC = () => {
                       {p.isSignal && <span className="text-amber-400 text-[8px]">★</span>}
                     </span>
                   </td>
-                  <td className="px-1.5 py-1 text-right tabular-nums">{p.pt.toFixed(1)}</td>
-                  <td className="px-1.5 py-1 text-right tabular-nums">{p.eta.toFixed(2)}</td>
-                  <td className="px-1.5 py-1 text-right tabular-nums">{p.phi.toFixed(2)}</td>
-                  <td className="px-1.5 py-1 text-right tabular-nums">{p.energy.toFixed(1)}</td>
+                  <td className={`px-1.5 py-1 text-right tabular-nums ${getCellClass(ps, 'pt')}`}>
+                    <span className="flex items-center justify-end gap-1">
+                      <span>{hasSourceData ? getCellValue(ps, 'pt') : p.pt.toFixed(1)}</span>
+                      <FieldSourceIndicator source={ps.fieldSources?.pt} />
+                    </span>
+                  </td>
+                  <td className={`px-1.5 py-1 text-right tabular-nums ${getCellClass(ps, 'eta')}`}>
+                    <span className="flex items-center justify-end gap-1">
+                      <span>{hasSourceData ? getCellValue(ps, 'eta') : p.eta.toFixed(2)}</span>
+                      <FieldSourceIndicator source={ps.fieldSources?.eta} />
+                    </span>
+                  </td>
+                  <td className={`px-1.5 py-1 text-right tabular-nums ${getCellClass(ps, 'phi')}`}>
+                    <span className="flex items-center justify-end gap-1">
+                      <span>{hasSourceData ? getCellValue(ps, 'phi') : p.phi.toFixed(2)}</span>
+                      <FieldSourceIndicator source={ps.fieldSources?.phi} />
+                    </span>
+                  </td>
                   <td className="px-1.5 py-1 text-right tabular-nums">
-                    {p.charge > 0 ? '+' : p.charge < 0 ? '−' : '0'}
+                    {p.energy.toFixed(1)}
+                  </td>
+                  <td className={`px-1.5 py-1 text-right tabular-nums ${getCellClass(ps, 'charge')}`}>
+                    <span className="flex items-center justify-end gap-1">
+                      <span>{p.charge > 0 ? '+' : p.charge < 0 ? '−' : '0'}</span>
+                      <FieldSourceIndicator source={ps.fieldSources?.charge} />
+                    </span>
                   </td>
                 </tr>
               );

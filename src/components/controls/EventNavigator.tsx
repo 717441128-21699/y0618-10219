@@ -1,9 +1,21 @@
 import React from 'react';
 import {
   ChevronLeft, ChevronRight, ChevronFirst, ChevronLast,
-  Star, StarOff, ArrowRightLeft, List, Loader2,
+  Star, StarOff, ArrowRightLeft, List, Loader2, Database, Calculator,
 } from 'lucide-react';
 import { useEventStore } from '@/store/eventStore';
+import type { FieldSource } from '@/types/physics';
+
+const SourceBadge: React.FC<{ source: FieldSource }> = ({ source }) => (
+  <span className={`ml-1 inline-flex items-center gap-0.5 rounded px-1 text-[8px] ${
+    source === 'file'
+      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+      : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+  }`}>
+    {source === 'file' ? <Database className="h-2 w-2" /> : <Calculator className="h-2 w-2" />}
+    {source === 'file' ? '文件' : '默认'}
+  </span>
+);
 
 const EventNavigator: React.FC = () => {
   const currentIndex = useEventStore(s => s.currentEventIndex);
@@ -53,6 +65,11 @@ const EventNavigator: React.FC = () => {
     );
   }
 
+  const ev = currentEvent as any;
+  const runNumberSource: FieldSource = ev.runNumberSource ?? 'derived';
+  const lumiSource: FieldSource = ev.luminosityBlockSource ?? 'derived';
+  const eventIdSource: FieldSource = ev.eventIdSource ?? 'derived';
+
   return (
     <div className="space-y-3 rounded-md border border-[#2A3352] bg-[#0D1528] p-3">
       <div className="flex items-center justify-between">
@@ -68,18 +85,33 @@ const EventNavigator: React.FC = () => {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+      <div className="space-y-1.5 text-[10px] font-mono">
         <div className="rounded border border-[#1E2742] bg-[#070B18] px-2 py-1.5">
-          <div className="text-slate-500">RUN</div>
-          <div className="text-emerald-300">{currentEvent.runNumber}</div>
+          <div className="flex items-center justify-between">
+            <div className="text-slate-500">RUN</div>
+            <SourceBadge source={runNumberSource} />
+          </div>
+          <div className={`${runNumberSource === 'file' ? 'text-emerald-300' : 'text-slate-400'} text-[12px] font-bold`}>
+            {currentEvent.runNumber}
+          </div>
         </div>
         <div className="rounded border border-[#1E2742] bg-[#070B18] px-2 py-1.5">
-          <div className="text-slate-500">LUMI</div>
-          <div className="text-emerald-300">{currentEvent.luminosityBlock}</div>
+          <div className="flex items-center justify-between">
+            <div className="text-slate-500">LUMI</div>
+            <SourceBadge source={lumiSource} />
+          </div>
+          <div className={`${lumiSource === 'file' ? 'text-emerald-300' : 'text-slate-400'} text-[12px] font-bold`}>
+            {currentEvent.luminosityBlock}
+          </div>
         </div>
-        <div className="col-span-2 rounded border border-[#1E2742] bg-[#070B18] px-2 py-1.5">
-          <div className="text-slate-500">EVENT ID</div>
-          <div className="text-cyan-300 text-[12px] font-bold">{currentEvent.eventId}</div>
+        <div className="rounded border border-[#1E2742] bg-[#070B18] px-2 py-1.5">
+          <div className="flex items-center justify-between">
+            <div className="text-slate-500">EVENT ID</div>
+            <SourceBadge source={eventIdSource} />
+          </div>
+          <div className={`${eventIdSource === 'file' ? 'text-cyan-300' : 'text-slate-400'} text-[13px] font-bold`}>
+            {currentEvent.eventId}
+          </div>
         </div>
       </div>
 
