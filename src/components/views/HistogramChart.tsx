@@ -111,7 +111,7 @@ const HistogramChart: React.FC<HistogramChartProps> = ({
           >
             <Layers className="h-2.5 w-2.5" /> {showAll ? '叠加' : '单通道'}
           </button>
-          {(['ee', 'mumu', 'gammagamma', 'll', 'jj', 'custom'] as DecayChannelKey[]).map(k => {
+          {(['ee', 'mumu', 'gammagamma', 'tautau', 'bb', 'll', 'jj', 'custom'] as DecayChannelKey[]).map(k => {
             const has = channels[k].pairs.length > 0;
             const active = activeChannel === k && !showAll;
             const lbl = CHANNEL_LABELS[k];

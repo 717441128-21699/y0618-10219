@@ -64,7 +64,7 @@ const ParticleTable: React.FC = () => {
           const all = getFiltered(event);
           const p1 = all.find(x => x.id === first);
           if (p1) {
-            addPair(p1, p);
+            addPair(p1, p, event.eventId);
             buildHistogram('mass');
           }
         }

@@ -131,7 +131,7 @@ function Interactions() {
         if (event) {
           const all = filtered.getFilteredParticles(event);
           const p1 = all.find(x => x.id === first);
-          if (p1) addPair(p1, p);
+          if (p1) addPair(p1, p, event.eventId);
         }
       }
     }

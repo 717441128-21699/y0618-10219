@@ -149,7 +149,7 @@ const LongitudinalSection: React.FC<LongitudinalSectionProps> = ({ width = 400, 
       if (first !== p.id && event) {
         const all = getFiltered(event);
         const p1 = all.find(x => x.id === first);
-        if (p1) addPair(p1, p);
+        if (p1) addPair(p1, p, event.eventId);
       }
     }
   };

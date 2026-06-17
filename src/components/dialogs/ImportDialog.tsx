@@ -78,6 +78,9 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
   const [expandBranchList, setExpandBranchList] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<Partial<Record<ParticleField, any[]>>>({});
+  const [nParticlesPerEvent, setNParticlesPerEvent] = useState<number[]>([]);
+  const [probedFile, setProbedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -98,18 +101,21 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
 
   const probeAndGo = async (file: File) => {
     setFileName(file.name);
-    setStatusMsg(`正在探测 ${file.name} ...`);
+    setStatusMsg(`正在探测 ${file.name}（读取前 5 个事件用于预览校验）...`);
+    setProbedFile(file);
     try {
       const r = await probeFile(file);
       setDetectedFormat(r.format);
       setEventCount(r.eventCount);
       setBranches(r.branches);
       setMappings(r.mappings);
+      setPreviewData(r.preview);
+      setNParticlesPerEvent(r.nParticlesPerEvent);
       setStep('mapping');
       setStatusMsg(null);
     } catch (e) {
       setStatusMsg(`探测失败: ${(e as Error).message}`);
-      setTimeout(() => setStatusMsg(null), 5000);
+      setTimeout(() => setStatusMsg(null), 8000);
     }
   };
 
@@ -158,16 +164,14 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
   };
 
   const goValidate = () => {
-    const previewData: any = {};
-    mappings.forEach(m => { if (m.branchName) previewData[m.particleField] = [1, 2, 3]; });
-    const r = validateBranchMappings(mappings, branches, previewData);
+    const r = validateBranchMappings(mappings, branches, previewData, nParticlesPerEvent);
     setReport(r);
     setStep('validate');
   };
 
   const doImport = async () => {
-    const input = fileInputRef.current?.files?.[0];
-    if (!input) {
+    const fileToLoad = probedFile || fileInputRef.current?.files?.[0];
+    if (!fileToLoad) {
       setStatusMsg('请先重新选择文件（浏览器限制无法保留文件句柄）');
       setStep('source');
       return;
@@ -175,7 +179,7 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onClose }) => {
     setStep('loading');
     setProgress(0);
     try {
-      await loadFromRealFile(input, mappings, 200, (d, t) => setProgress(Math.round(d * 100 / t)));
+      await loadFromRealFile(fileToLoad, mappings, 200, (d, t) => setProgress(Math.round(d * 100 / t)));
       setStep('done');
       setTimeout(() => { onClose(); }, 1500);
     } catch (e) {

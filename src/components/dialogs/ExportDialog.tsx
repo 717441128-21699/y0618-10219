@@ -116,27 +116,56 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
   if (!open) return null;
 
   const handleExport = async () => {
+    if (!previewRef.current) {
+      setResult('导出失败：预览容器未就绪，请刷新预览后重试');
+      setTimeout(() => setResult(null), 4000);
+      return;
+    }
     setExporting(true);
     setResult(null);
     try {
-      await exportVisualization({
-        format,
-        scope,
+      const dataUrl = await renderCompositionToImage(previewRef.current, {
         width: presetData.width,
         height: presetData.height,
         dpi,
-        backgroundColor: transparent ? '#00000000' : '#050810',
-        quality: 0.95,
-        includeLegend: true,
-        includeWatermark: false,
+        format: format === 'svg' ? 'png' : format as 'png' | 'jpeg',
+        backgroundColor: transparent ? 'rgba(11,16,32,0)' : '#0B1020',
       });
-      setResult(`导出成功: ${format.toUpperCase()} @ ${dpi} DPI, ${presetData.width}×${presetData.height}px`);
+
+      let finalDataUrl = dataUrl;
+      if (format === 'svg') {
+        const svgDataUrl = await (await import('html-to-image')).toSvg(previewRef.current, {
+          width: presetData.width,
+          height: presetData.height,
+          pixelRatio: dpi / 96,
+          backgroundColor: transparent ? 'transparent' : '#0B1020',
+          cacheBust: true,
+        });
+        finalDataUrl = svgDataUrl;
+      }
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const safeFile = (loadedFile || 'export').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30);
+      const filename = `hepviz_${composition}_${safeFile}_${timestamp}.${format}`;
+
+      const res = await fetch(finalDataUrl);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      setResult(`导出成功: ${format.toUpperCase()} @ ${dpi} DPI, ${presetData.width}×${presetData.height}px → ${filename}`);
     } catch (e) {
       setResult(`导出失败: ${(e as Error).message}`);
     } finally {
       setExporting(false);
     }
-    setTimeout(() => setResult(null), 4000);
+    setTimeout(() => setResult(null), 6000);
   };
 
   const Formats: { v: ExportFormat; icon: any; name: string; desc: string }[] = [
@@ -391,12 +420,12 @@ const ExportDialog: React.FC<ExportDialogProps> = ({ open, onClose }) => {
             </div>
 
             <div
+              ref={previewRef}
               className={`relative rounded-lg border ${showGrid ? 'border-dashed' : 'border-solid'} border-[#2A3352] bg-[#070B18] overflow-hidden`}
               style={{ aspectRatio: presetData.width / presetData.height }}
             >
               {showPreview ? (
                 <div
-                  ref={previewRef}
                   className={`absolute inset-2 grid gap-2 p-3 ${gridStyle} ${showGrid ? 'bg-[#0A1228]' : 'bg-[#050810]'}`}
                   style={{
                     background: transparent
